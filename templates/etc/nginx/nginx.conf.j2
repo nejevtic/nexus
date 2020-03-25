@@ -1,0 +1,118 @@
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    tcp_nodelay         on;
+    keepalive_timeout   65;
+    types_hash_max_size 2048;
+    client_max_body_size 900M;
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
+
+    include /etc/nginx/conf.d/*.conf;
+
+    server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen       443 ssl http2 default_server;
+        server_name  {{ inventory_hostname }};
+        root         /usr/share/nginx/html;
+
+        ssl_certificate     "{{ nexus_ssl_dir }}/{{ nexus_ssl_certificate_file }}";
+        ssl_certificate_key "{{ nexus_tls_key_file_path }}/{{ nexus_ssl_key_file }}";
+        ssl_session_cache   shared:SSL:1m;
+        ssl_session_timeout 10m;
+        ssl_ciphers         PROFILE=SYSTEM;
+        ssl_prefer_server_ciphers on;
+
+
+        # Load configuration files for the default server block.
+        include /etc/nginx/default.d/*.conf;
+
+        location / {
+
+            proxy_pass            http://{{ inventory_hostname }}:8081/;
+            proxy_redirect        off;
+            proxy_set_header      Host $host;
+            proxy_set_header      X-Real-IP $remote_addr;
+            proxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header      X-Forwarded-Host $server_name;
+            proxy_set_header      X-Forwarded-Proto $scheme;
+        }
+
+        error_page 404 /404.html;
+            location = /40x.html {
+        }
+
+        error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
+        }
+    }
+
+
+{% for host in nexus_server_certs %}
+
+    server {
+        listen       443 ssl http2;
+        server_name  {{ host }};
+        root         /usr/share/nginx/html;
+
+        ssl_certificate     "{{ nexus_ssl_dir }}/{{ host }}.pem";
+        ssl_certificate_key "{{ nexus_tls_key_file_path }}/{{ host }}.key";
+        ssl_session_cache   shared:SSL:1m;
+        ssl_session_timeout 10m;
+        ssl_ciphers         PROFILE=SYSTEM;
+        ssl_prefer_server_ciphers on;
+
+
+        # Load configuration files for the default server block.
+        include /etc/nginx/default.d/*.conf;
+
+        location / {
+
+            if ($http_user_agent ~ docker ) {
+                proxy_pass http://{{ inventory_hostname }}:5000;
+                }
+
+{% if host.startswith('nexus-docker') %}
+            proxy_pass            http://{{ inventory_hostname }}:5000/;
+{% elif host.startswith('nexus-iq') %}
+            proxy_pass            http://{{ inventory_hostname }}:8070/;
+{% else %}
+            proxy_pass            http://{{ inventory_hostname }}:8081/;
+{% endif %}
+            proxy_redirect        off;
+            proxy_set_header      Host $host;
+            proxy_set_header      X-Real-IP $remote_addr;
+            proxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header      X-Forwarded-Host $server_name;
+            proxy_set_header      X-Forwarded-Proto $scheme;
+        }
+
+        error_page 404 /404.html;
+            location = /40x.html {
+        }
+
+        error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
+        }
+    }
+
+{% endfor %}
+
+}
+

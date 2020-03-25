@@ -1,0 +1,216 @@
+---
+- name: Set fact
+  set_fact:
+    role_comment: "( {{ nexus_docker_container_name | default('nexus') }} )"
+    skip_password_reset: "false"
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Create Nexus config  directory
+  file:
+    path: "{{ item }}"
+    state: directory
+  with_items:
+    - "{{ nexus_docker_directory }}"
+    - nexus
+  tags:
+    - docker_deployment
+
+- name: Configure Java heap
+  template:
+    src: opt/sonatype/nexus/bin/nexus.vmoptions.j2
+    dest: "{{ nexus_docker_directory }}/nexus.vmoptions"
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Docker login
+  command: "docker login -u {{ docker_registry_user }} -p {{ vault_docker_registry_password }}"
+  register: docker_login
+  changed_when: false
+  tags:
+    - docker_login
+    - nexus
+    - docker_deployment
+
+- name: Ensure container is started {{ role_comment }}
+  docker_container:
+    name: "{{ nexus_docker_container_name }}"
+    state: started
+    detach: "true"
+    privileged: yes
+    recreate: no
+    restart_policy: unless-stopped
+    image: "{{ nexus_docker_image_name }}{% if nexus_docker_image_name %}:{% endif %}{{ nexus_docker_image_tag }}"
+    published_ports: "{{ nexus_docker_published_ports }}"
+    volumes: "{{ nexus_docker_volumes }}"
+    docker_host: "{{ nexus_docker_host }}"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.nexus.rule: "Host(`{{ nexus_fqdn_url }}`)"
+      traefik.http.routers.nexus.entrypoints: "{{ traefik_insecure_entrypoint }}"
+      traefik.http.routers.nexus.middlewares: "nexus-https-redirect"
+      traefik.http.routers.nexus.service: "nexus"
+      traefik.http.routers.nexus-secure.rule: "Host(`{{ nexus_fqdn_url }}`)"
+      traefik.http.routers.nexus-secure.entrypoints: "{{ traefik_secure_entrypoint }}"
+      traefik.http.routers.nexus-secure.service: "nexus"
+      traefik.http.routers.nexus-secure.tls: "true"
+      traefik.http.services.nexus.loadbalancer.server.port: "{{ nexus_dashboard_port }}"
+      traefik.http.services.nexus-secure.loadbalancer.server.port: "{{ nexus_dashboard_port }}"
+      traefik.http.routers.nexus-registry.rule: "Host(`{{ nexus_registry_fqdn_url }}`)"
+      traefik.http.routers.nexus-registry.entrypoints: "{{ traefik_secure_entrypoint }}"
+      traefik.http.routers.nexus-registry.service: "nexus-registry"
+      traefik.http.routers.nexus-registry.tls: "true"
+      traefik.http.services.nexus-registry.loadbalancer.server.port: "{{ nexus_registry_port }}"
+      traefik.http.middlewares.nexus-https-redirect.redirectscheme.scheme: "https"
+      traefik.docker.network: "{{ nexus_network }}"
+    networks:
+      - name: "{{ nexus_network }}"
+  tags:
+    - nexus_start
+    - nexus
+    - docker_deployment
+
+- name: Wait until service is ready {{ role_comment }}
+  uri:
+    url: "{{ nexus_url_https }}"
+    return_content: true
+    timeout: 5
+  register: service_console
+  until: service_console.content.find("Nexus Repository Manager") != -1
+  delay: "{{ wait_delay | default(5) }}"
+  retries: 360
+  tags:
+    - nexus_check
+    - nexus
+    - docker_deployment
+
+- name: Test expected password
+  uri:
+    url: "{{ nexus_url_api_login_https }}"
+    method: "POST"
+    body:
+      username: "{{ nexus_user | b64encode }}"
+      password: "{{ nexus_password | b64encode }}"
+    body_format: "form-urlencoded"
+    timeout: 5
+    status_code:
+      - 204
+      - 403
+      - 500
+  ignore_errors: "true"
+  register: nexus_expected_password
+  delay: "{{ wait_delay | default(5) }}"
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Skip password reset if password already set
+  set_fact:
+    skip_password_reset: "true"
+  when:
+    - nexus_expected_password is defined
+    - nexus_expected_password.status is defined
+    - nexus_expected_password.status == 204
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Get generated nexus password
+  docker_execute:
+    docker_container: "{{ nexus_docker_container_name }}"
+    docker_exec_command: "cat /nexus-data/admin.password"
+    docker_host: "{{ nexus_docker_host }}"
+  register: nexus_new_password
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Set changeAdminPassword script name
+  set_fact:
+    script_changeAdminPassword: "changeAdminPassword-{{ ansible_date_time.iso8601_micro | to_uuid }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Create changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}"
+    method: "POST"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_new_password.msg }}"
+    force_basic_auth: "true"
+    body:
+      name: "{{ script_changeAdminPassword }}"
+      content: "def user = security.securitySystem.getUser('{{ nexus_user }}'); \
+                security.securitySystem.updateUser(user); \
+                security.securitySystem.changePassword('{{ nexus_user }}','{{ nexus_password }}')"
+      type: "groovy"
+    body_format: "json"
+    return_content: "true"
+    status_code: 204
+    timeout: 5
+  register: nexus_change_password_create
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Run changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}/{{ script_changeAdminPassword }}/run"
+    method: "POST"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_new_password.msg }}"
+    force_basic_auth: "true"
+    headers:
+      Content-Type: "text/plain"
+    timeout: 5
+    status_code: 200
+  register: nexus_change_password_create_run
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Delete changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}/{{ script_changeAdminPassword }}"
+    method: "DELETE"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_password }}"
+    force_basic_auth: "true"
+    timeout: 5
+    status_code: 204
+  register: nexus_change_password_create_delete
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
+
+- name: Test if new password has been set
+  uri:
+    url: "{{ nexus_url_api_login_https }}"
+    method: "POST"
+    body:
+      username: "{{ nexus_user | b64encode }}"
+      password: "{{ nexus_password | b64encode }}"
+    body_format: "form-urlencoded"
+    timeout: 5
+    status_code: 204
+  when:
+    - not skip_password_reset
+  tags:
+    - nexus
+    - docker_deployment
