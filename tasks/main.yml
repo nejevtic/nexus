@@ -1,0 +1,15 @@
+---
+
+- include: os_install.yml
+  tags:
+    - nexus
+    - os_deployment
+  when:
+    - not nexus_docker_installation
+
+- include: docker_install.yml
+  tags:
+    - nexus
+    - docker_deployment
+  when:
+    - nexus_docker_installation

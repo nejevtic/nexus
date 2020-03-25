@@ -1,0 +1,470 @@
+---
+
+- name: Check if certificate exists
+  stat:
+    path: "{{ nexus_ssl_dir }}/{{ inventory_hostname }}.pem"
+  register: ipa_cert_stat
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+
+# In case HTTP service certificate needs to be created additionally use something similar to
+- name: Check if HTTP service certificate exists
+  stat:
+    path: "{{ nexus_ssl_dir }}/{{ nexus_fqdn }}.pem"
+  register: ipa_cert_service_stat
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - never
+
+# In case HTTP service certificate needs to be created additionally use something similar to
+- name: Check if docker registry service certificate exists
+  stat:
+    path: "{{ nexus_ssl_dir }}/{{ nexus_registry_fqdn }}.pem"
+  register: ipa_cert_registry_service_stat
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - never
+
+- name: Copy externally generated TLS certs
+  copy:
+    src: "etc/pki/tls/certs/{{ item }}.pem"
+    dest: "{{ nexus_ssl_dir }}/{{ item }}.pem"
+    owner: root
+    group: root
+    mode: '0644'
+  with_items: "{{ nexus_server_certs }}"
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - never
+
+- name: Copy externally generated TLS keys
+  copy:
+    src: "etc/pki/tls/private/{{ item }}.key"
+    dest: "{{ nexus_tls_key_file_path }}/{{ item }}.key"
+    owner: root
+    group: root
+    mode: '0600'
+  with_items: "{{ nexus_server_certs }}"
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - never
+
+- name: Create internal certificate
+  ipa_certificate:
+    path: "{{ nexus_ssl_dir }}/{{ inventory_hostname }}.pem"
+    privatekey: "{{ nexus_tls_key_file_path }}/{{ inventory_hostname }}.key"
+    dnsname: "{{ inventory_hostname }}"
+    principal: "HTTP/{{ inventory_hostname }}"
+  when: ipa_cert_stat.stat.exists != true
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+
+# In case HTTP service certificate needs to be created additionally use something similar to
+- name: Create HTTP internal certificate
+  ipa_certificate:
+    path: "{{ nexus_ssl_dir }}/{{ nexus_fqdn }}.pem"
+    privatekey: "{{ nexus_tls_key_file_path }}/{{ nexus_fqdn }}.key"
+    dnsname: "{{ nexus_fqdn }}"
+    principal: "HTTP/{{ nexus_fqdn }}"
+  when: ipa_cert_service_stat.stat.exists != true
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - os_cert_http
+    - never
+
+# In case HTTP service certificate needs to be created additionally use something similar to
+- name: Create HTTP internal certificate
+  ipa_certificate:
+    path: "{{ nexus_ssl_dir }}/{{ nexus_registry_fqdn }}.pem"
+    privatekey: "{{ nexus_tls_key_file_path }}/{{ nexus_registry_fqdn }}.key"
+    dnsname: "{{ nexus_registry_fqdn }}"
+    principal: "HTTP/{{ nexus_registry_fqdn }}"
+  when: ipa_cert_service_stat.stat.exists != true
+  tags:
+    - os_install
+    - os_cert
+    - nexus
+    - os_deployment
+    - os_cert_http
+    - never
+
+- name: Install packages
+  package:
+    name: "{{ item }}"
+    state: latest
+  with_items: "{{ nexus_os_packages }}"
+  tags:
+    - os_install
+    - nexus
+    - os_deployment
+
+- name: Create group
+  group:
+    name: "{{ nexus_group }}"
+    system: true
+    state: "present"
+  tags:
+    - os_configure
+    - os_user
+    - nexus
+    - os_deployment
+
+- name: Add Nexus OS user
+  become: true
+  user:
+    name: "{{ nexus_owner }}"
+    comment: "Nexus OS User"
+    group: "{{ nexus_group }}"
+  tags:
+    - os_configure
+    - os_user
+    - nexus
+    - os_deployment
+
+- name: Configure the open file limit of the Nexus user
+  lineinfile:
+    path: "/etc/security/limits.conf"
+    line: "nexus - nofile 65536"
+    create: true
+  tags:
+    - os_configure
+    - os_user
+    - nexus
+    - os_deployment
+
+- name: Create Nexus config  directory
+  file:
+    path: "{{ item }}"
+    state: directory
+  with_items:
+    - "{{ nexus_os_base_directory }}"
+  tags:
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Download Nexus tar archive
+  get_url:
+    url: "{{ nexus_os_archive_url }}"
+    dest: "{{ nexus_os_archive_path }}"
+    owner: "{{ nexus_owner }}"
+    group: "{{ nexus_group }}"
+  tags:
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Extract Nexus archive name
+  shell: |
+    basename {{ nexus_os_archive_path }}/nexus*unix.tar.gz
+  register: archive_filename
+  tags:
+    - os_version
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Extract Nexus version
+  shell: |
+    ls {{ nexus_os_archive_path }} | grep -i 'nexus.*unix.tar.gz' | grep -oE '([0-9]+.[0-9]+.[0-9]+-.[0-9]+)'
+  register: version
+  tags:
+    - os_version
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Getting Nexus version
+  set_fact:
+    nexus_archive_filename: "{{ archive_filename.stdout }}"
+    nexus_version: "{{ version.stdout }}"
+    nexus_os_run_directory: "{{ nexus_os_base_directory }}/nexus-{{ nexus_version }}"
+    nexus_os_data_directory: "{{ nexus_os_base_directory }}/sonatype-work"
+  tags:
+    - os_version
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Unarchive tar file
+  unarchive:
+    remote_src: yes
+    src: "{{ nexus_os_archive_path }}/{{ nexus_archive_filename }}"
+    dest: "{{ nexus_os_base_directory }}"
+    owner: "{{ nexus_owner }}"
+    group: "{{ nexus_group }}"
+  tags:
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Set permissions in Nexus folder
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ nexus_owner }}"
+    group: "{{ nexus_group }}"
+    recurse: yes
+  with_items:
+    - "{{ nexus_os_run_directory }}"
+    - "{{ nexus_os_data_directory }}"
+  tags:
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Change the user for the nexus service account
+  lineinfile:
+    path: "{{ nexus_os_run_directory }}/bin/nexus.rc"
+    line: 'run_as_user="{{ nexus_owner }}"'
+    create: true
+  tags:
+    - os_configure
+    - os_service
+    - nexus
+    - os_deployment
+
+- name: Configure Java heap
+  template:
+    src: opt/sonatype/nexus/bin/nexus.vmoptions.j2
+    dest: "{{ nexus_os_base_directory }}/nexus-{{ nexus_version }}/bin/nexus.vmoptions"
+  tags:
+    - os_configure
+    - os_service
+    - nexus
+    - os_deployment
+
+- name: Add systemd unit
+  template:
+    src: "etc/systemd/system/nexus.service.j2"
+    dest: "/etc/systemd/system/nexus.service"
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart nexus
+  tags:
+    - os_configure
+    - os_service
+    - nexus
+    - os_deployment
+
+- name: Configure SELinux
+  shell: |
+    setsebool -P httpd_can_network_connect 1
+  tags:
+    - os_configure
+    - nexus
+    - os_deployment
+
+- name: Configure Nginx
+  template:
+    src: etc/nginx/nginx.conf.j2
+    dest: "/etc/nginx/nginx.conf"
+  tags:
+    - os_configure
+    - os_service
+    - os_nginx
+    - nexus
+    - os_deployment
+  notify: restart nginx
+
+- name: Enable services
+  service:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+  with_items:
+    - "nexus"
+    - "nginx"
+  tags:
+    - os_configure
+    - os_service
+    - os_nginx
+    - nexus
+    - os_deployment
+
+- name: Wait until Nexus service is ready {{ role_comment }}
+  uri:
+    url: "{{ nexus_url_https }}"
+    return_content: true
+    timeout: 5
+  register: service_console
+  until: service_console.content.find("Nexus Repository Manager") != -1
+  delay: "{{ wait_delay | default(5) }}"
+  retries: 360
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Extract default Admin password
+  shell: |
+    cat {{ nexus_os_data_directory }}/nexus3/admin.password
+  register: password
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Set password
+  set_fact:
+    nexus_password: "{{ password.stdout }}"
+  tags:
+    - post_configure
+    - nexus
+    - os_deployment
+
+- name: Test expected password
+  uri:
+    url: "{{ nexus_url_api_login_https }}"
+    method: "POST"
+    body:
+      username: "{{ nexus_user | b64encode }}"
+      password: "{{ nexus_password | b64encode }}"
+    body_format: "form-urlencoded"
+    timeout: 5
+    status_code:
+      - 204
+      - 403
+      - 500
+  ignore_errors: "true"
+  register: nexus_expected_password
+  delay: "{{ wait_delay | default(5) }}"
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Skip password reset if password already set
+  set_fact:
+    skip_password_reset: "true"
+  when:
+    - nexus_expected_password is defined
+    - nexus_expected_password.status is defined
+    - nexus_expected_password.status == 204
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Get generated nexus password
+  shell: "cat {{ nexus_os_base_directory }}/sonatype-work/nexus3/admin.password"
+  register: nexus_new_password
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Set changeAdminPassword script name
+  set_fact:
+    script_changeAdminPassword: "changeAdminPassword-{{ ansible_date_time.iso8601_micro | to_uuid }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Create changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}"
+    method: "POST"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_new_password.msg }}"
+    force_basic_auth: "true"
+    body:
+      name: "{{ script_changeAdminPassword }}"
+      content: "def user = security.securitySystem.getUser('{{ nexus_user }}'); \
+                security.securitySystem.updateUser(user); \
+                security.securitySystem.changePassword('{{ nexus_user }}','{{ nexus_password }}')"
+      type: "groovy"
+    body_format: "json"
+    return_content: "true"
+    status_code: 204
+    timeout: 5
+  register: nexus_change_password_create
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Run changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}/{{ script_changeAdminPassword }}/run"
+    method: "POST"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_new_password.msg }}"
+    force_basic_auth: "true"
+    headers:
+      Content-Type: "text/plain"
+    timeout: 5
+    status_code: 200
+  register: nexus_change_password_create_run
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Delete changeAdminPassword script
+  uri:
+    url: "{{ nexus_url_api_script_https }}/{{ script_changeAdminPassword }}"
+    method: "DELETE"
+    user: "{{ nexus_user }}"
+    password: "{{ nexus_password }}"
+    force_basic_auth: "true"
+    timeout: 5
+    status_code: 204
+  register: nexus_change_password_create_delete
+  delay: "{{ wait_delay | default(5) }}"
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment
+
+- name: Test if new password has been set
+  uri:
+    url: "{{ nexus_url_api_login_https }}"
+    method: "POST"
+    body:
+      username: "{{ nexus_user | b64encode }}"
+      password: "{{ nexus_password | b64encode }}"
+    body_format: "form-urlencoded"
+    timeout: 5
+    status_code: 204
+  when:
+    - not skip_password_reset
+  tags:
+    - os_post_configure
+    - nexus
+    - os_deployment

@@ -1,0 +1,55 @@
+---
+
+nexus_version: "3.22.0-02"
+nexus_docker_installation: false
+nexus_os_packages:
+  - "java-1.8.0-openjdk"
+  - "java-1.8.0-openjdk-devel"
+  - "nginx"
+nexus_os_tar_url: "https://download.sonatype.com/nexus/3/latest-unix.tar.gz"
+nexus_os_archive_path: "/tmp"
+nexus_os_base_directory: "/opt"
+nexus_docker_image_user: "sso-docker-registry"
+docker_image_name: "nexus"
+nexus_docker_image_name: "nexus"
+nexus_docker_image: "{{ docker_image_user }}/{{ docker_image_name }}"
+nexus_docker_image_tag: "latest"
+nexus_docker_container_name: "{{ docker_image_name }}"
+nexus_docker_timezone: "Europe/Zurich"
+nexus_service_host: "{{ inventory_hostname }}"
+nexus_service_port: 8081
+nexus_registry_port: "5000"
+
+nexus_registry_mirror_port: "{{ service_nexus_registry_mirror_port | default('5001') }}"
+nexus_registry_group_port: "{{ service_nexus_registry_group_port | default('5002') }}"
+nexus_maven_repository_port: "{{ service_nexus_maven_repository_port | default('8081') }}"
+
+nexus_host: "{{ nexus_service_host }}"
+nexus_port: "{{ nexus_service_port }}"
+nexus_user: "{{ nexus_service_user | default('admin') }}"
+nexus_os_user: "nexus"
+nexus_owner: "nexus"
+nexus_group: "nexus"
+nexus_password: "{{ nexus_service_password | default('admin123') }}"
+nexus_url: "http://{{ nexus_service_host }}:{{ nexus_service_port }}"
+nexus_url_http: "http://{{ nexus_fqdn_url }}"
+nexus_url_https: "https://{{ nexus_fqdn_url }}"
+nexus_url_api_script: "{{ nexus_url }}/service/rest/v1/script"
+nexus_url_api_script_http: "{{ nexus_url_http }}/service/rest/v1/script"
+nexus_url_api_script_https: "{{ nexus_url_https }}/service/rest/v1/script"
+nexus_url_api_login: "{{ nexus_url }}/service/rapture/session"
+nexus_url_api_login_http: "{{ nexus_url_http }}/service/rapture/session"
+nexus_url_api_login_https: "{{ nexus_url_https }}/service/rapture/session"
+
++nexus_docker_published_ports:
+  - "5000:5000/tcp"
+  - "5001:5001/tcp"
+  - "5002:5002/tcp"
+
+nexus_docker_directory: "/docker/nexus-config"
+nexus_docker_volumes:
+  - "nexus-data:/nexus-data:z"
+  - "{{ nexus_docker_directory }}/nexus.vmoptions:/opt/sonatype/nexus/bin/nexus.vmoptions:rw"
+
+nexus_docker_host: "unix://var/run/docker.sock"
+nexus_gitlab_unarchive_path: "/tmp/"

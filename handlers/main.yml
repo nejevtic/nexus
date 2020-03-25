@@ -1,0 +1,12 @@
+---
+
+- name: restart nexus
+  service:
+    name: nexus
+    state: restarted
+
+
+- name: restart nginx
+  service:
+    name: nginx
+    state: restarted
